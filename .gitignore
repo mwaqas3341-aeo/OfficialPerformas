@@ -1,0 +1,14 @@
+# clasp credentials (NEVER commit this)
+.clasprc.json
+
+# Node
+node_modules/
+npm-debug.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+secrets.json
