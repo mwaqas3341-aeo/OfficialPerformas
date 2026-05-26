@@ -1,180 +1,195 @@
+// ═══════════════════════════════════════════════════════════════
+//  OFFICIAL PERFORMAS — Google Apps Script Backend
+//  Government of Punjab — Education Department
+// ═══════════════════════════════════════════════════════════════
+
+// ── CONFIGURATION — Edit these values ──────────────────────────
+var CONFIG = {
+  SHEET_NAME:    "Performas",          // Name of the sheet tab
+  DRIVE_FOLDER:  "Official Performas", // Google Drive folder name
+  ADMIN_PASS:    "Punjab@2025",        // Change this password!
+  SPREADSHEET_ID: ""                   // Leave blank = uses bound sheet
+                                       // OR paste your Sheet ID here
+};
+// ────────────────────────────────────────────────────────────────
+
+
 /**
- * OFFICIAL PERFORMAS DASHBOARD — BACKEND (Code.gs)
- * Fixes: AI removed, delete added, bottom-to-top Sr No, white-screen fixed
+ * Serve the HTML web app
  */
-
-const FOLDER_ID    = '1yJm-FbkthfYbDWTDIYYsouhu5xt6B9ED';
-const SHEET_NAME   = 'Sheet1';
-const ADMIN_PASSWORD = '4455';
-
-// ─── Entry Point ────────────────────────────────────────────────────────────
 function doGet() {
-  return HtmlService.createTemplateFromFile('Index')
-    .evaluate()
-    .setTitle('Official Performas Dashboard')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+  return HtmlService
+    .createHtmlOutputFromFile("Index")
+    .setTitle("Official Performas — Government of Punjab")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Converts a Drive share/view URL into a direct download URL.
- */
-function getDownloadLink(url) {
-  if (!url) return '';
-  // Standard file: .../file/d/ID/view → .../file/d/ID/download
-  if (url.includes('/file/d/') && url.includes('/view')) {
-    return url.replace('/view', '/download');
-  }
-  // Google Docs / Sheets / Slides: export as PDF
-  if (url.includes('/edit')) {
-    return url.replace(/\/edit.*$/, '/export?format=pdf');
-  }
-  return url;
-}
-
-/**
- * Extracts the Drive file ID from any standard Drive URL.
- * Handles: /file/d/ID/..., /open?id=ID, etc.
- */
-function getFileIdFromUrl(url) {
-  if (!url) return null;
-  var m = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
-  if (m) return m[1];
-  m = url.match(/id=([a-zA-Z0-9_-]{20,})/);
-  return m ? m[1] : null;
-}
-
-// ─── Public API ──────────────────────────────────────────────────────────────
-
-/**
- * Returns all non-empty performa rows from the sheet.
- * Column layout (1-indexed): A=Sr, B=Name, C=Details, D=Format, E=Keywords, F=Summary, G=DriveURL
+ * Get all performa records from the Sheet
+ * Returns array of objects for the frontend cards
  */
 function getSheetData() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  var lastRow = sheet.getLastRow();
+  var sheet = getSheet();
+  var rows  = sheet.getDataRange().getValues();
 
-  if (lastRow < 3) return [];
+  if (rows.length <= 1) return []; // only header row
 
-  var rows = sheet.getRange(3, 1, lastRow - 2, 7).getValues();
+  var headers = rows[0];
+  var data    = [];
 
-  return rows
-    .filter(function(r) { return r[1] && r[1].toString().trim() !== ''; })
-    .map(function(r) {
-      return {
-        srNo:         r[0],
-        name:         r[1],
-        details:      r[2],
-        format:       r[3],
-        keywords:     r[4],
-        summary:      r[5],
-        viewLink:     r[6],
-        downloadLink: getDownloadLink(r[6])
-      };
+  for (var i = 1; i < rows.length; i++) {
+    var row = rows[i];
+    // Skip empty rows
+    if (!row[0]) continue;
+
+    data.push({
+      name:         row[0] || "",
+      summary:      row[1] || "",
+      details:      row[2] || "",
+      format:       row[3] || "",
+      keywords:     row[4] || "",
+      viewLink:     row[5] || "",
+      downloadLink: row[6] || "",
+      uploadDate:   row[7] || ""
     });
-}
-
-/**
- * Password check.
- */
-function checkAdmin(pass) {
-  return pass === ADMIN_PASSWORD;
-}
-
-/**
- * Uploads a file to Drive and appends a row to the sheet.
- * Sr No is determined by scanning from the BOTTOM UP so gaps/deletes are handled.
- */
-function uploadFinal(obj) {
-  var sheet  = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-  var folder = DriveApp.getFolderById(FOLDER_ID);
-
-  // 1. Save to Drive
-  var decoded = Utilities.base64Decode(obj.base64);
-  var blob    = Utilities.newBlob(decoded, obj.mimeType, obj.fileName);
-  var file    = folder.createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-
-  // 2. Find next Sr No — search BOTTOM to TOP
-  var lastRow = sheet.getLastRow();
-  var newSr   = 1;
-
-  if (lastRow >= 3) {
-    for (var row = lastRow; row >= 3; row--) {
-      var val = sheet.getRange(row, 1).getValue();
-      if (val !== '' && !isNaN(val) && Number(val) > 0) {
-        newSr = Number(val) + 1;
-        break;
-      }
-    }
   }
 
-  // 3. Append row
+  return data;
+}
+
+
+/**
+ * Check if the entered password matches admin password
+ */
+function checkAdmin(pass) {
+  return pass === CONFIG.ADMIN_PASS;
+}
+
+
+/**
+ * Upload a file to Google Drive and record it in the Sheet
+ * @param {Object} obj - { base64, mimeType, fileName, name, details, format, keywords, summary }
+ */
+function uploadFinal(obj) {
+  if (!obj || !obj.base64) throw new Error("No file data received.");
+
+  // 1. Get or create the Drive folder
+  var folder = getOrCreateFolder(CONFIG.DRIVE_FOLDER);
+
+  // 2. Decode base64 and create file
+  var blob = Utilities.newBlob(
+    Utilities.base64Decode(obj.base64),
+    obj.mimeType,
+    obj.fileName
+  );
+  var file = folder.createFile(blob);
+
+  // 3. Make the file publicly accessible (view + download)
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  var fileId       = file.getId();
+  var viewLink     = "https://drive.google.com/file/d/" + fileId + "/view";
+  var downloadLink = "https://drive.google.com/uc?export=download&id=" + fileId;
+  var uploadDate   = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+
+  // 4. Append a row to the Sheet
+  var sheet = getSheet();
   sheet.appendRow([
-    newSr,
     obj.name,
+    obj.summary,
     obj.details,
     obj.format,
     obj.keywords,
-    obj.summary,
-    file.getUrl()
+    viewLink,
+    downloadLink,
+    uploadDate
   ]);
 
-  return { success: true, srNo: newSr };
+  return { success: true, fileId: fileId };
 }
 
+
 /**
- * Deletes a performa from both the sheet and Google Drive.
- * Searches for the matching row from BOTTOM to TOP.
+ * Delete a performa from Drive and remove its row from the Sheet
+ * @param {string} pass     - Admin password
+ * @param {string} viewLink - The Drive view URL of the file to delete
  */
-function deletePerforma(pass, driveUrl) {
-  if (pass !== ADMIN_PASSWORD) {
-    return { success: false, message: 'Invalid password.' };
+function deletePerforma(pass, viewLink) {
+  if (pass !== CONFIG.ADMIN_PASS) {
+    return { success: false, message: "Incorrect password." };
   }
 
   try {
-    var sheet   = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-    var lastRow = sheet.getLastRow();
+    // 1. Extract file ID from view link
+    var match  = viewLink.match(/\/d\/([a-zA-Z0-9_-]+)\//);
+    if (!match) return { success: false, message: "Could not extract file ID from link." };
+    var fileId = match[1];
 
-    if (lastRow < 3) {
-      return { success: false, message: 'Sheet has no data.' };
+    // 2. Delete from Drive
+    try {
+      DriveApp.getFileById(fileId).setTrashed(true);
+    } catch(e) {
+      // File may already be deleted — continue to remove from sheet
     }
 
-    var targetId    = getFileIdFromUrl(driveUrl);
-    var rowToDelete = -1;
-
-    // Search bottom to top for the matching URL / file ID
-    var urlColumn = sheet.getRange(3, 7, lastRow - 2, 1).getValues();
-    for (var i = urlColumn.length - 1; i >= 0; i--) {
-      var cellUrl    = urlColumn[i][0] ? urlColumn[i][0].toString() : '';
-      var cellFileId = getFileIdFromUrl(cellUrl);
-      if (targetId && cellFileId === targetId) {
-        rowToDelete = i + 3; // +3 because data starts at sheet row 3
+    // 3. Remove the matching row from Sheet
+    var sheet = getSheet();
+    var rows  = sheet.getDataRange().getValues();
+    for (var i = rows.length - 1; i >= 1; i--) {
+      if ((rows[i][5] || "").indexOf(fileId) !== -1) {
+        sheet.deleteRow(i + 1);
         break;
       }
     }
 
-    // Move Drive file to trash
-    if (targetId) {
-      try {
-        DriveApp.getFileById(targetId).setTrashed(true);
-      } catch (driveErr) {
-        Logger.log('Drive trash error (non-fatal): ' + driveErr);
-        // Continue — still remove from sheet
-      }
-    }
+    return { success: true };
 
-    // Remove sheet row
-    if (rowToDelete > 0) {
-      sheet.deleteRow(rowToDelete);
-      return { success: true };
-    } else {
-      return { success: false, message: 'Row not found in sheet.' };
-    }
-
-  } catch (e) {
-    return { success: false, message: e.toString() };
+  } catch(e) {
+    return { success: false, message: e.message };
   }
+}
+
+
+// ── INTERNAL HELPERS ────────────────────────────────────────────
+
+/**
+ * Returns the configured sheet, creating headers if needed
+ */
+function getSheet() {
+  var ss;
+  if (CONFIG.SPREADSHEET_ID) {
+    ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  } else {
+    ss = SpreadsheetApp.getActiveSpreadsheet();
+  }
+
+  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+
+  // Auto-create sheet + headers on first run
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.SHEET_NAME);
+    sheet.appendRow([
+      "Name", "Summary", "Details", "Format",
+      "Keywords", "ViewLink", "DownloadLink", "UploadDate"
+    ]);
+    // Style header row
+    var header = sheet.getRange(1, 1, 1, 8);
+    header.setBackground("#1a6b3c");
+    header.setFontColor("#ffffff");
+    header.setFontWeight("bold");
+    sheet.setFrozenRows(1);
+  }
+
+  return sheet;
+}
+
+
+/**
+ * Get a Drive folder by name, create it if it doesn't exist
+ */
+function getOrCreateFolder(name) {
+  var folders = DriveApp.getFoldersByName(name);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(name);
 }
